@@ -1,0 +1,36 @@
+# Universal agent image — used by all agent types (polecat, mayor, witness,
+# refinery, deacon). Role is determined by env vars at runtime.
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    git \
+    tmux \
+    jq \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Go (needed for gt/bd build or can be pre-built)
+# For production, copy pre-built binaries instead.
+# RUN curl -LO https://go.dev/dl/go1.24.linux-amd64.tar.gz \
+#     && tar -C /usr/local -xzf go1.24.linux-amd64.tar.gz \
+#     && rm go1.24.linux-amd64.tar.gz
+# ENV PATH="/usr/local/go/bin:${PATH}"
+
+# Install gt and bd (pre-built binaries)
+# COPY --from=gt-builder /build/gt /usr/local/bin/gt
+# COPY --from=bd-builder /build/bd /usr/local/bin/bd
+
+# Install Claude Code CLI
+# RUN npm install -g @anthropic-ai/claude-code
+
+# Agent entrypoint
+COPY image/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Runtime directories
+RUN mkdir -p /gt
+
+ENV GT_RUNTIME=k8s
+
+ENTRYPOINT ["/entrypoint.sh"]

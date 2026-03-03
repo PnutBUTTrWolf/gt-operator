@@ -1,0 +1,49 @@
+# Gas Town Operator configuration
+
+namespace: gastown
+
+operator:
+  image: gt-operator:latest
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+agent:
+  image: gt-agent:latest
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+
+dolt:
+  image: dolthub/dolt:latest
+  port: 3307
+  storage:
+    size: 20Gi
+    storageClass: ""  # Use default storage class
+
+storage:
+  # Storage class for RWX PVCs (per-rig).
+  # Examples: efs-sc (AWS), filestore-sc (GCP), azurefile (Azure)
+  rwxStorageClass: ""
+  defaultSize: 50Gi
+
+claude:
+  # Provider: none, vertex, bedrock, anthropic
+  provider: none
+  # Secret name containing API credentials
+  secretName: claude-credentials
+
+mayor:
+  enabled: true
+
+deacon:
+  enabled: true

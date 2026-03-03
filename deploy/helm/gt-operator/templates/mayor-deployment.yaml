@@ -1,0 +1,46 @@
+{{- if .Values.mayor.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mayor
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: gt-agent
+    role: mayor
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gt-agent
+      role: mayor
+  template:
+    metadata:
+      labels:
+        app: gt-agent
+        role: mayor
+    spec:
+      containers:
+        - name: mayor
+          image: {{ .Values.agent.image }}
+          env:
+            - name: GT_ROLE
+              value: mayor
+            - name: GT_TOWN_ROOT
+              value: /gt
+            - name: GT_RUNTIME
+              value: k8s
+            - name: GT_DOLT_HOST
+              value: dolt-svc
+            - name: GT_DOLT_PORT
+              value: {{ .Values.dolt.port | quote }}
+          resources:
+            {{- toYaml .Values.agent.resources | nindent 12 }}
+          {{- if .Values.claude.secretName }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.claude.secretName }}
+                optional: true
+          {{- end }}
+{{- end }}

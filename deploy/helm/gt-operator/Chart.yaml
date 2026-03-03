@@ -1,0 +1,6 @@
+apiVersion: v2
+name: gt-operator
+description: Gas Town Kubernetes Operator — manages multi-agent workspaces
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

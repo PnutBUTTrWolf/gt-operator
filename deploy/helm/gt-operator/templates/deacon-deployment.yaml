@@ -1,0 +1,46 @@
+{{- if .Values.deacon.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: deacon
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: gt-agent
+    role: deacon
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gt-agent
+      role: deacon
+  template:
+    metadata:
+      labels:
+        app: gt-agent
+        role: deacon
+    spec:
+      containers:
+        - name: deacon
+          image: {{ .Values.agent.image }}
+          env:
+            - name: GT_ROLE
+              value: deacon
+            - name: GT_TOWN_ROOT
+              value: /gt
+            - name: GT_RUNTIME
+              value: k8s
+            - name: GT_DOLT_HOST
+              value: dolt-svc
+            - name: GT_DOLT_PORT
+              value: {{ .Values.dolt.port | quote }}
+          resources:
+            {{- toYaml .Values.agent.resources | nindent 12 }}
+          {{- if .Values.claude.secretName }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.claude.secretName }}
+                optional: true
+          {{- end }}
+{{- end }}

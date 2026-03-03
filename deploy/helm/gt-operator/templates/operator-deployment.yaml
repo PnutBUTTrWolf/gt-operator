@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gt-operator
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: gt-operator
+spec:
+  replicas: {{ .Values.operator.replicas }}
+  selector:
+    matchLabels:
+      app: gt-operator
+  template:
+    metadata:
+      labels:
+        app: gt-operator
+    spec:
+      serviceAccountName: gt-operator
+      containers:
+        - name: operator
+          image: {{ .Values.operator.image }}
+          args:
+            - --namespace={{ .Values.namespace }}
+            - --agent-image={{ .Values.agent.image }}
+          env:
+            - name: GT_RUNTIME
+              value: k8s
+            - name: GT_NAMESPACE
+              value: {{ .Values.namespace }}
+          resources:
+            {{- toYaml .Values.operator.resources | nindent 12 }}

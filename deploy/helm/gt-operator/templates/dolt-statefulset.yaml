@@ -1,0 +1,69 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: dolt
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: dolt
+spec:
+  serviceName: dolt
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dolt
+  template:
+    metadata:
+      labels:
+        app: dolt
+    spec:
+      containers:
+        - name: dolt
+          image: {{ .Values.dolt.image }}
+          args:
+            - sql-server
+            - --host=0.0.0.0
+            - --port={{ .Values.dolt.port | quote }}
+            - --data-dir=/dolt-data
+          ports:
+            - containerPort: {{ .Values.dolt.port }}
+              name: mysql
+          livenessProbe:
+            tcpSocket:
+              port: mysql
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            tcpSocket:
+              port: mysql
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: dolt-data
+              mountPath: /dolt-data
+  volumeClaimTemplates:
+    - metadata:
+        name: dolt-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.dolt.storage.storageClass }}
+        storageClassName: {{ .Values.dolt.storage.storageClass }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.dolt.storage.size }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dolt-svc
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: dolt
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.dolt.port }}
+      targetPort: mysql
+      name: mysql
+  selector:
+    app: dolt

@@ -1,0 +1,15 @@
+# Binaries
+/bin/
+/gt-operator
+/tmux-shim
+
+# Go
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
