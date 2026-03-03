@@ -11,6 +11,9 @@ vendor/
 .vscode/
 *.swp
 
+# Beads
+.beads/
+
 # OS
 .DS_Store
 
