@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 
 	"github.com/anthropics/gt-operator/internal/shim"
 
@@ -15,19 +17,27 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
+const (
+	// polecatFinalizer is added to Polecat CRDs to ensure worktree cleanup
+	// runs before the resource is removed from the API server.
+	polecatFinalizer = "gastown.io/worktree-cleanup"
+)
+
 // PolecatReconciler watches Polecat CRDs and reconciles them into Pods.
 //
 // When a Polecat CRD is created (by gt sling):
-//  1. Create a Pod with the universal agent image
-//  2. Set env vars: GT_ROLE, GT_RIG, GT_POLECAT, GT_BRANCH, GT_RUNTIME=k8s
-//  3. Mount the rig's RWX PVC at /gt/<rigname>
-//  4. Mount Dolt connection config from ConfigMap
-//  5. Mount Claude credentials from Secret
-//  6. Pod entrypoint creates worktree + starts tmux + launches agent
+//  1. Add the worktree-cleanup finalizer
+//  2. Create a Pod with the universal agent image
+//  3. Set env vars: GT_ROLE, GT_RIG, GT_POLECAT, GT_BRANCH, GT_RUNTIME=k8s
+//  4. Mount the rig's RWX PVC at /gt/<rigname>
+//  5. Mount Dolt connection config from ConfigMap
+//  6. Mount Claude credentials from Secret
+//  7. Pod entrypoint creates worktree + starts tmux + launches agent
 //
 // When a Polecat CRD is deleted (by gt nuke):
-//  1. Finalizer runs: clean up worktree on PVC, update bead state in Dolt
-//  2. Delete the Pod
+//  1. Finalizer runs: clean up worktree on PVC
+//  2. Delete the Pod and unregister session
+//  3. Remove the finalizer so Kubernetes completes deletion
 //
 // When a Pod dies unexpectedly:
 //  1. Operator detects via informer
@@ -42,8 +52,19 @@ type PolecatReconciler struct {
 }
 
 // Reconcile ensures the desired Polecat state matches actual Pod state.
+// It implements the Kubernetes finalizer pattern: when deletionTimestamp is set,
+// it performs worktree cleanup before allowing the resource to be removed.
 func (r *PolecatReconciler) Reconcile(ctx context.Context, polecat *unstructured.Unstructured) {
 	name := polecat.GetName()
+
+	// Check if the resource is being deleted (has a deletionTimestamp).
+	// With finalizers, Kubernetes sets deletionTimestamp but won't remove
+	// the resource until all finalizers are cleared.
+	if polecat.GetDeletionTimestamp() != nil {
+		r.handleFinalizerCleanup(ctx, polecat)
+		return
+	}
+
 	spec, ok := polecat.Object["spec"].(map[string]interface{})
 	if !ok {
 		log.Printf("[polecat] %s: missing spec", name)
@@ -59,6 +80,14 @@ func (r *PolecatReconciler) Reconcile(ctx context.Context, polecat *unstructured
 		log.Printf("[polecat] %s: rig and bead are required", name)
 		r.setStatus(ctx, polecat, "Failed", "", "missing required spec fields: rig, bead")
 		return
+	}
+
+	// Ensure the finalizer is present before creating any resources.
+	if !hasFinalizer(polecat, polecatFinalizer) {
+		if err := r.addFinalizer(ctx, polecat); err != nil {
+			log.Printf("[polecat] %s: failed to add finalizer: %v", name, err)
+			return
+		}
 	}
 
 	podName := fmt.Sprintf("polecat-%s", name)
@@ -93,7 +122,47 @@ func (r *PolecatReconciler) Reconcile(ctx context.Context, polecat *unstructured
 	r.setStatus(ctx, polecat, "Pending", podName, "pod created")
 }
 
-// HandleDelete cleans up resources when a Polecat CRD is deleted.
+// handleFinalizerCleanup runs when the Polecat CRD has a deletionTimestamp.
+// It cleans up the worktree, deletes the pod, and removes the finalizer
+// so Kubernetes can complete the deletion.
+func (r *PolecatReconciler) handleFinalizerCleanup(ctx context.Context, polecat *unstructured.Unstructured) {
+	name := polecat.GetName()
+
+	if !hasFinalizer(polecat, polecatFinalizer) {
+		return
+	}
+
+	spec, _ := polecat.Object["spec"].(map[string]interface{})
+	rigName, _ := spec["rig"].(string)
+
+	// Clean up the worktree on the rig PVC
+	if rigName != "" {
+		r.cleanupWorktree(name, rigName)
+	}
+
+	// Delete the pod
+	podName := fmt.Sprintf("polecat-%s", name)
+	err := r.clientset.CoreV1().Pods(r.namespace).Delete(ctx, podName, metav1.DeleteOptions{})
+	if err != nil && !errors.IsNotFound(err) {
+		log.Printf("[polecat] %s: failed to delete pod during finalizer: %v", name, err)
+	}
+
+	// Unregister session from router
+	sessionName := fmt.Sprintf("gt-%s", name)
+	r.sessionRouter.Unregister(sessionName)
+
+	// Remove the finalizer to allow Kubernetes to complete deletion
+	if err := r.removeFinalizer(ctx, polecat); err != nil {
+		log.Printf("[polecat] %s: failed to remove finalizer: %v", name, err)
+		return
+	}
+
+	log.Printf("[polecat] %s: finalizer cleanup complete (worktree removed, pod deleted)", name)
+}
+
+// HandleDelete is a safety net for the informer DeleteFunc.
+// With finalizers, primary cleanup happens in handleFinalizerCleanup via Reconcile.
+// This handles edge cases where the finalizer was removed manually.
 func (r *PolecatReconciler) HandleDelete(ctx context.Context, polecat *unstructured.Unstructured) {
 	name := polecat.GetName()
 	podName := fmt.Sprintf("polecat-%s", name)
@@ -110,6 +179,82 @@ func (r *PolecatReconciler) HandleDelete(ctx context.Context, polecat *unstructu
 	}
 
 	log.Printf("[polecat] %s: deleted pod %s", name, podName)
+}
+
+// cleanupWorktree removes the polecat's worktree directory from the rig PVC.
+// The worktree lives at /gt/<rigname>/polecats/<polecatname>/ on the shared RWX PVC.
+func (r *PolecatReconciler) cleanupWorktree(polecatName, rigName string) {
+	worktreePath := filepath.Join("/gt", rigName, "polecats", polecatName)
+
+	info, err := os.Stat(worktreePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			log.Printf("[polecat] %s: worktree already removed (%s)", polecatName, worktreePath)
+			return
+		}
+		log.Printf("[polecat] %s: failed to stat worktree %s: %v", polecatName, worktreePath, err)
+		return
+	}
+	if !info.IsDir() {
+		log.Printf("[polecat] %s: worktree path is not a directory: %s", polecatName, worktreePath)
+		return
+	}
+
+	if err := os.RemoveAll(worktreePath); err != nil {
+		log.Printf("[polecat] %s: failed to remove worktree %s: %v", polecatName, worktreePath, err)
+		return
+	}
+
+	log.Printf("[polecat] %s: removed worktree %s", polecatName, worktreePath)
+}
+
+// addFinalizer adds the worktree-cleanup finalizer to the Polecat CRD.
+func (r *PolecatReconciler) addFinalizer(ctx context.Context, polecat *unstructured.Unstructured) error {
+	finalizers := polecat.GetFinalizers()
+	finalizers = append(finalizers, polecatFinalizer)
+
+	patch := polecat.DeepCopy()
+	patch.SetFinalizers(finalizers)
+
+	_, err := r.dynClient.Resource(polecatGVR).Namespace(r.namespace).Update(ctx, patch, metav1.UpdateOptions{})
+	if err != nil {
+		return fmt.Errorf("update finalizers: %w", err)
+	}
+
+	log.Printf("[polecat] %s: added finalizer %s", polecat.GetName(), polecatFinalizer)
+	return nil
+}
+
+// removeFinalizer removes the worktree-cleanup finalizer from the Polecat CRD.
+func (r *PolecatReconciler) removeFinalizer(ctx context.Context, polecat *unstructured.Unstructured) error {
+	finalizers := polecat.GetFinalizers()
+	var updated []string
+	for _, f := range finalizers {
+		if f != polecatFinalizer {
+			updated = append(updated, f)
+		}
+	}
+
+	patch := polecat.DeepCopy()
+	patch.SetFinalizers(updated)
+
+	_, err := r.dynClient.Resource(polecatGVR).Namespace(r.namespace).Update(ctx, patch, metav1.UpdateOptions{})
+	if err != nil {
+		return fmt.Errorf("update finalizers: %w", err)
+	}
+
+	log.Printf("[polecat] %s: removed finalizer %s", polecat.GetName(), polecatFinalizer)
+	return nil
+}
+
+// hasFinalizer checks whether the resource has the given finalizer.
+func hasFinalizer(obj *unstructured.Unstructured, finalizer string) bool {
+	for _, f := range obj.GetFinalizers() {
+		if f == finalizer {
+			return true
+		}
+	}
+	return false
 }
 
 // buildPod constructs the Pod spec for a polecat agent.

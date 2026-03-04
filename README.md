@@ -48,7 +48,7 @@ The operator wraps the Gas Town daemon binary rather than replacing it. A tmux s
 | Inter-agent comms | Queue mail via Dolt (unchanged); nudges via filesystem queue on PVC |
 | Citadel integration | Local VS Code extension, port-forward for Dolt, kubectl exec for terminals |
 | Container image | Single universal image for all agent roles |
-| Polecats | Created/deleted via Polecat CRD lifecycle |
+| Polecats | Created/deleted via Polecat CRD lifecycle; finalizer cleans up worktree on PVC |
 | Infrastructure agents | Deployments (mayor, deacon = town-level; witness, refinery = per-rig) |
 
 ## Components
