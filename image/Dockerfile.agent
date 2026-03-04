@@ -1,5 +1,33 @@
 # Universal agent image — used by all agent types (polecat, mayor, witness,
 # refinery, deacon). Role is determined by env vars at runtime.
+#
+# Build: docker build -t gt-agent:latest -f image/Dockerfile.agent .
+
+# --- Stage 1: Build gt and bd CLIs from source ---
+FROM golang:1.24-bookworm AS go-builder
+
+# bd requires ICU for Unicode support
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libicu-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Build gt CLI
+RUN go install github.com/steveyegge/gastown/cmd/gt@latest
+
+# Build bd CLI (requires CGO for ICU)
+ENV CGO_ENABLED=1
+RUN go install github.com/steveyegge/beads/cmd/bd@latest
+
+# --- Stage 2: Build tmux shim from operator source ---
+FROM golang:1.24-bookworm AS shim-builder
+
+WORKDIR /build
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN go build -o /build/tmux-shim ./internal/shim/cmd
+
+# --- Stage 3: Runtime image ---
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -8,29 +36,36 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     tmux \
     jq \
+    libicu72 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Go (needed for gt/bd build or can be pre-built)
-# For production, copy pre-built binaries instead.
-# RUN curl -LO https://go.dev/dl/go1.24.linux-amd64.tar.gz \
-#     && tar -C /usr/local -xzf go1.24.linux-amd64.tar.gz \
-#     && rm go1.24.linux-amd64.tar.gz
-# ENV PATH="/usr/local/go/bin:${PATH}"
-
-# Install gt and bd (pre-built binaries)
-# COPY --from=gt-builder /build/gt /usr/local/bin/gt
-# COPY --from=bd-builder /build/bd /usr/local/bin/bd
+# Install Node.js (required for Claude Code CLI)
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
 
 # Install Claude Code CLI
-# RUN npm install -g @anthropic-ai/claude-code
+RUN npm install -g @anthropic-ai/claude-code
+
+# Install gt and bd CLIs (built from source in stage 1)
+COPY --from=go-builder /go/bin/gt /usr/local/bin/gt
+COPY --from=go-builder /go/bin/bd /usr/local/bin/bd
+
+# Install tmux shim — placed ahead of real tmux in PATH.
+# The shim intercepts cross-pod tmux commands and routes them via the
+# nudge queue (agent mode) or kubectl exec (operator mode).
+COPY --from=shim-builder /build/tmux-shim /usr/local/bin/tmux
 
 # Agent entrypoint
 COPY image/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 # Runtime directories
-RUN mkdir -p /gt
+RUN mkdir -p /gt /etc/gt
 
+# Environment — agent pods use nudge queue for cross-pod tmux
 ENV GT_RUNTIME=k8s
+ENV GT_REAL_TMUX=/usr/bin/tmux
+ENV GT_SHIM_MODE=agent
 
 ENTRYPOINT ["/entrypoint.sh"]
