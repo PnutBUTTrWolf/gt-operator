@@ -3,6 +3,7 @@ package shim
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -217,30 +218,98 @@ func extractSessionTarget(args []string) string {
 	return ""
 }
 
+// DefaultRegistryPath is the default file path for persisting the session registry.
+const DefaultRegistryPath = "/var/run/gt-operator/session-registry.json"
+
 // --- Session Registry (operator-side) ---
 
-// MapSessionToPod provides a simple in-memory session→pod mapping.
-// The operator updates this map as pods are created/deleted.
+// MapSessionToPod provides a file-backed session→pod mapping.
+// The operator updates this map as pods are created/deleted,
+// and persists the mapping to disk so the shim can load it on startup.
 type MapSessionToPod struct {
-	mapping map[string]string // session name → pod name
+	mapping      map[string]string // session name → pod name
+	registryPath string            // path to persist the registry
 }
 
-// NewMapRouter creates a session router with an initial mapping.
+// NewMapRouter creates a session router that persists to the default registry path.
 func NewMapRouter() *MapSessionToPod {
-	return &MapSessionToPod{mapping: make(map[string]string)}
+	return NewMapRouterWithPath(DefaultRegistryPath)
 }
 
-// Register adds a session→pod mapping.
+// NewMapRouterWithPath creates a session router that persists to the given path.
+func NewMapRouterWithPath(path string) *MapSessionToPod {
+	return &MapSessionToPod{
+		mapping:      make(map[string]string),
+		registryPath: path,
+	}
+}
+
+// Register adds a session→pod mapping and persists to disk.
 func (m *MapSessionToPod) Register(sessionName, podName string) {
 	m.mapping[sessionName] = podName
+	if err := m.save(); err != nil {
+		log.Printf("[session-registry] failed to persist after register(%s→%s): %v", sessionName, podName, err)
+	}
 }
 
-// Unregister removes a session mapping.
+// Unregister removes a session mapping and persists to disk.
 func (m *MapSessionToPod) Unregister(sessionName string) {
 	delete(m.mapping, sessionName)
+	if err := m.save(); err != nil {
+		log.Printf("[session-registry] failed to persist after unregister(%s): %v", sessionName, err)
+	}
 }
 
 // PodForSession returns the pod for a session, or empty if not found.
 func (m *MapSessionToPod) PodForSession(sessionName string) string {
 	return m.mapping[sessionName]
+}
+
+// Load reads the session registry from disk, merging into the current mapping.
+// Missing or empty files are not an error — the registry starts empty.
+func (m *MapSessionToPod) Load() error {
+	data, err := os.ReadFile(m.registryPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read registry %s: %w", m.registryPath, err)
+	}
+	if len(data) == 0 {
+		return nil
+	}
+
+	var loaded map[string]string
+	if err := json.Unmarshal(data, &loaded); err != nil {
+		return fmt.Errorf("unmarshal registry %s: %w", m.registryPath, err)
+	}
+
+	for k, v := range loaded {
+		m.mapping[k] = v
+	}
+	return nil
+}
+
+// save writes the current session registry to disk atomically.
+func (m *MapSessionToPod) save() error {
+	dir := filepath.Dir(m.registryPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("create registry dir %s: %w", dir, err)
+	}
+
+	data, err := json.Marshal(m.mapping)
+	if err != nil {
+		return fmt.Errorf("marshal registry: %w", err)
+	}
+
+	// Write to temp file then rename for atomic update
+	tmp := m.registryPath + ".tmp"
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		return fmt.Errorf("write temp registry: %w", err)
+	}
+	if err := os.Rename(tmp, m.registryPath); err != nil {
+		return fmt.Errorf("rename registry: %w", err)
+	}
+
+	return nil
 }

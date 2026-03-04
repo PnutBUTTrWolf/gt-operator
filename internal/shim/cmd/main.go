@@ -34,9 +34,11 @@ func main() {
 	s := shim.NewShim(mode, namespace)
 
 	if mode == shim.ModeOperator {
-		// Operator mode: load session registry for pod routing
-		router := shim.NewMapRouter()
-		// TODO: Load registry from shared file or operator API
+		// Operator mode: load session registry from persisted file
+		router := shim.NewMapRouterWithPath(registryPath)
+		if err := router.Load(); err != nil {
+			fmt.Fprintf(os.Stderr, "tmux-shim: warning: failed to load session registry: %v\n", err)
+		}
 		s.Router = router
 	}
 
