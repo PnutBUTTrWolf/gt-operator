@@ -125,18 +125,58 @@ gt sling my-bead myproject
 
 ## Rollout Strategy
 
-1. **Stage 1** — Dolt in k8s, everything else local. Port-forward Dolt.
-2. **Stage 2** — Single polecat in k8s. Validate full agent lifecycle.
-3. **Stage 3** — Full migration. All agents in k8s. Citadel via port-forward + kubectl exec.
+### Stage 1 — Dolt in k8s (current)
+
+Deploy only the Dolt StatefulSet to k8s. All agents remain local and connect via port-forward. This validates Dolt's PVC durability and connection stability before migrating agents.
+
+**Prerequisites:** Kubernetes cluster accessible via `kubectl`, Helm 3 installed.
+
+```bash
+# Deploy Dolt StatefulSet + ClusterIP Service
+make deploy-stage1
+
+# In a separate terminal: forward Dolt to localhost:3307
+make port-forward-dolt
+
+# Configure local agents to use the forwarded Dolt
+export GT_DOLT_HOST=127.0.0.1
+export GT_DOLT_PORT=3307
+
+# Run validation checks
+make validate-stage1
+```
+
+**What gets deployed:**
+- Namespace (`gastown`)
+- Dolt StatefulSet (1 replica, 20Gi PVC)
+- ClusterIP Service (`dolt-svc` on port 3307)
+
+**What stays local:** Operator, mayor, deacon, witness, refinery, polecats.
+
+**Teardown:** `make undeploy-stage1` (PVC is retained; delete manually if needed).
+
+### Stage 2 — Single polecat in k8s
+
+Validate full agent lifecycle with one polecat running in k8s.
+
+### Stage 3 — Full migration
+
+All agents in k8s. Citadel via port-forward + kubectl exec.
 
 ## Development
 
 ```bash
-make build        # Build operator binary
-make build-shim   # Build tmux shim binary
-make build-all    # Build everything
-make test         # Run tests
-make clean        # Remove build artifacts
+make build              # Build operator binary
+make build-shim         # Build tmux shim binary
+make build-all          # Build everything
+make test               # Run tests
+make clean              # Remove build artifacts
+
+# Stage 1
+make deploy-stage1      # Deploy Dolt only to k8s
+make port-forward-dolt  # Port-forward Dolt to localhost
+make validate-stage1    # Run Stage 1 validation
+make undeploy-stage1    # Tear down Stage 1
 ```
 
 ## License

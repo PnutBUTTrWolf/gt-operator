@@ -3,6 +3,7 @@
 namespace: gastown
 
 operator:
+  enabled: true
   image: gt-operator:latest
   replicas: 1
   resources:
@@ -24,11 +25,19 @@ agent:
       memory: 2Gi
 
 dolt:
+  enabled: true
   image: dolthub/dolt:latest
   port: 3307
   storage:
     size: 20Gi
     storageClass: ""  # Use default storage class
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
 
 storage:
   # Storage class for RWX PVCs (per-rig).

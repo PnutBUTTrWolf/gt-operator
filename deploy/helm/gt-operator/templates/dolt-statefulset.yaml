@@ -1,3 +1,4 @@
+{{- if .Values.dolt.enabled }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -21,8 +22,8 @@ spec:
           image: {{ .Values.dolt.image }}
           args:
             - sql-server
-            - --host=0.0.0.0
-            - --port={{ .Values.dolt.port | quote }}
+            - "--host=0.0.0.0"
+            - "--port={{ .Values.dolt.port }}"
             - --data-dir=/dolt-data
           ports:
             - containerPort: {{ .Values.dolt.port }}
@@ -37,6 +38,8 @@ spec:
               port: mysql
             initialDelaySeconds: 5
             periodSeconds: 10
+          resources:
+            {{- toYaml .Values.dolt.resources | nindent 12 }}
           volumeMounts:
             - name: dolt-data
               mountPath: /dolt-data
@@ -67,3 +70,4 @@ spec:
       name: mysql
   selector:
     app: dolt
+{{- end }}

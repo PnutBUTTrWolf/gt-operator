@@ -1,0 +1,29 @@
+# Stage 1: Dolt only in k8s, everything else local.
+# Usage: helm upgrade --install gt-dolt deploy/helm/gt-operator -f deploy/helm/gt-operator/values-stage1.yaml
+
+# Deploy only the namespace and Dolt StatefulSet + Service.
+# All other components (operator, mayor, deacon) remain local.
+
+operator:
+  enabled: false
+
+mayor:
+  enabled: false
+
+deacon:
+  enabled: false
+
+dolt:
+  enabled: true
+  image: dolthub/dolt:latest
+  port: 3307
+  storage:
+    size: 20Gi
+    storageClass: ""  # Use default; set to your storage class if needed
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
